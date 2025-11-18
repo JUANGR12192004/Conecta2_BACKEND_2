@@ -1,0 +1,27 @@
+{"properties": [
+  {
+    "name": "app.frontend.confirmation-base-url",
+    "type": "java.lang.String",
+    "description": "A description for 'app.frontend.confirmation-base-url'"
+  },
+  {
+    "name": "app.base-url",
+    "type": "java.lang.String",
+    "description": "A description for 'app.base-url'"
+  },
+  {
+    "name": "app.jwt.activation.exp-min",
+    "type": "java.lang.String",
+    "description": "A description for 'app.jwt.activation.exp-min'"
+  },
+  {
+    "name": "app.jwt.access.exp-min",
+    "type": "java.lang.String",
+    "description": "A description for 'app.jwt.access.exp-min'"
+  },
+  {
+    "name": "app.jwt.secret",
+    "type": "java.lang.String",
+    "description": "A description for 'app.jwt.secret'"
+  }
+]}
