@@ -57,6 +57,7 @@ public class PaymentController {
     public ResponseEntity<?> confirm(@RequestBody Map<String, Object> payload) {
         try {
             Map<String, Object> intent = paymentService.confirmPayment(payload);
+            paymentWebhookService.handlePaymentPayload(intent);
             return ResponseEntity.ok(intent);
         } catch (StripeProcessingException ex) {
             return ResponseEntity.status(ex.getStatus()).body(Map.of("error", ex.getMessage()));
@@ -67,6 +68,7 @@ public class PaymentController {
     public ResponseEntity<?> status(@PathVariable String id) {
         try {
             Map<String, Object> intent = paymentService.retrievePaymentStatus(id);
+            paymentWebhookService.handlePaymentPayload(intent);
             return ResponseEntity.ok(intent);
         } catch (StripeProcessingException ex) {
             return ResponseEntity.status(ex.getStatus()).body(Map.of("error", ex.getMessage()));

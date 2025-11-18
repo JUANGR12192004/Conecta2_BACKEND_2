@@ -9,6 +9,8 @@ import com.example.worker_registry.Repository.OfertaRepository;
 import com.example.worker_registry.Repository.ServicioRepository;
 import com.example.worker_registry.Services.PushNotificationService;
 import jakarta.persistence.EntityNotFoundException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -24,9 +26,12 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 @Service
 public class OfertaService {
+
+    private static final Logger log = LoggerFactory.getLogger(OfertaService.class);
 
     private final OfertaRepository ofertaRepository;
     private final ServicioRepository servicioRepository;
@@ -321,38 +326,123 @@ public class OfertaService {
         );
     }
 
-    public void actualizarEstadoPago(Map<String, Object> intent) {
-        if (intent == null || intent.isEmpty()) return;
-        String intentId = getString(intent.get("id"));
-        Long offerId = extractOfferId(intent);
-        Optional<Oferta> opt = findOferta(intentId, offerId);
-        if (opt.isEmpty()) return;
-        Oferta oferta = opt.get();
-        guardarIntentEnOferta(oferta, intent);
-        String status = Optional.ofNullable(intent.get("status"))
-                .map(Object::toString)
-                .map(String::toUpperCase)
-                .orElse(null);
-        if (status != null) {
-            oferta.setPaymentStatus(status);
+    @Transactional
+    public PaymentUpdateResult actualizarEstadoPago(Map<String, Object> intent) {
+        if (intent == null || intent.isEmpty()) {
+            return PaymentUpdateResult.noop("empty-payload");
         }
+        Map<String, Object> normalizedIntent = normalizeIntent(intent);
+        String intentId = resolveIntentId(normalizedIntent);
+        Long offerId = extractOfferId(normalizedIntent);
+        if (intentId == null && offerId == null) {
+            log.warn("No payment intent or offer id found in payload {}", normalizedIntent.keySet());
+            return PaymentUpdateResult.noop("missing-identifiers");
+        }
+        Optional<Oferta> opt = findOferta(intentId, offerId);
+        if (opt.isEmpty()) {
+            log.warn("No oferta encontrada para intent={} offerId={}", intentId, offerId);
+            return PaymentUpdateResult.noop("offer-not-found");
+        }
+        Oferta oferta = opt.get();
+        String status = normalizeStatus(normalizedIntent);
+
+        guardarIntentEnOferta(oferta, normalizedIntent);
+        if (status != null) {
+            oferta.setPaymentStatus(status.toUpperCase(Locale.ROOT));
+        }
+
         Servicio servicio = oferta.getServicio();
         Long workerId = oferta.getTrabajador() != null ? oferta.getTrabajador().getId() : null;
-        if (servicio != null) {
-            if ("SUCCEEDED".equals(status)) {
-                servicio.setEstado(EstadoServicio.ASIGNADO);
-                if (workerId != null) {
-                    servicio.setAssignedWorkerId(workerId);
-                }
-                servicioRepository.save(servicio);
-                oferta.setEstado(EstadoNegociacion.ASIGNADO);
-                notificarPagoConfirmado(servicio, workerId);
-            } else {
-                servicio.setEstado(EstadoServicio.PENDIENTE);
-                servicioRepository.save(servicio);
+        boolean markedPaid = false;
+        boolean markedFailed = false;
+        boolean updated = false;
+
+        if (servicio != null && isSuccessStatus(status)) {
+            EstadoServicio previous = servicio.getEstado();
+            EstadoNegociacion previousNegotiation = oferta.getEstado();
+            servicio.setEstado(EstadoServicio.ASIGNADO);
+            if (workerId != null) {
+                servicio.setAssignedWorkerId(workerId);
             }
+            servicioRepository.save(servicio);
+            oferta.setEstado(EstadoNegociacion.ASIGNADO);
+            ofertaRepository.save(oferta);
+            markedPaid = previous != EstadoServicio.ASIGNADO || previousNegotiation != EstadoNegociacion.ASIGNADO;
+            updated = true;
+            notificarPagoConfirmado(servicio, workerId);
+            log.info("Pago confirmado en intent {}, servicio {} marcado como ASIGNADO", intentId, servicio.getId());
+        } else if (servicio != null && isFailureStatus(status)) {
+            servicio.setEstado(EstadoServicio.PENDIENTE);
+            servicio.setAssignedWorkerId(null);
+            servicioRepository.save(servicio);
+            oferta.setEstado(EstadoNegociacion.EN_NEGOCIACION);
+            oferta.setUltimaPropuestaPor(ParticipanteOferta.TRABAJADOR);
+            ofertaRepository.save(oferta);
+            markedFailed = true;
+            updated = true;
+            log.info("Pago rechazado en intent {}, servicio {} devuelto a PENDIENTE", intentId, servicio.getId());
+        } else {
+            ofertaRepository.save(oferta);
+            updated = true;
         }
-        ofertaRepository.save(oferta);
+
+        return new PaymentUpdateResult(updated, markedPaid, markedFailed, status, oferta, servicio);
+    }
+
+    private Map<String, Object> normalizeIntent(Map<String, Object> intent) {
+        Map<String, Object> normalized = new LinkedHashMap<>();
+        if (intent != null) {
+            intent.forEach((key, value) -> {
+                if (key != null) {
+                    normalized.put(key.toString(), value);
+                }
+            });
+        }
+        String resolvedId = resolveIntentId(normalized);
+        if (resolvedId != null) {
+            normalized.put("id", resolvedId);
+        }
+        String status = normalizeStatus(normalized);
+        if (status != null) {
+            normalized.put("status", status);
+        }
+        return normalized;
+    }
+
+    private String resolveIntentId(Map<String, Object> intent) {
+        String paymentIntentId = getString(intent.get("payment_intent"));
+        if (paymentIntentId != null && !paymentIntentId.isBlank()) {
+            return paymentIntentId;
+        }
+        return getString(intent.get("id"));
+    }
+
+    private String normalizeStatus(Map<String, Object> intent) {
+        Object status = intent.get("status");
+        if (status == null) {
+            status = intent.get("payment_status");
+        }
+        if (status == null) {
+            status = intent.get("paymentStatus");
+        }
+        if (status == null) {
+            return null;
+        }
+        String normalized = status.toString().trim().toLowerCase(Locale.ROOT);
+        return normalized.isEmpty() ? null : normalized;
+    }
+
+    private boolean isSuccessStatus(String status) {
+        if (status == null) return false;
+        String normalized = status.toLowerCase(Locale.ROOT);
+        return normalized.equals("succeeded") || normalized.equals("paid");
+    }
+
+    private boolean isFailureStatus(String status) {
+        if (status == null) return false;
+        String normalized = status.toLowerCase(Locale.ROOT);
+        Set<String> failures = Set.of("requires_payment_method", "canceled", "failed");
+        return failures.contains(normalized);
     }
 
     private void guardarIntentEnOferta(Oferta oferta, Map<String, Object> intent) {
@@ -392,8 +482,14 @@ public class OfertaService {
             Object raw = meta.get("offerId");
             Long parsed = parseLong(raw);
             if (parsed != null) return parsed;
+            parsed = parseLong(meta.get("ofertaId"));
+            if (parsed != null) return parsed;
+            parsed = parseLong(meta.get("oferta_id"));
+            if (parsed != null) return parsed;
         }
-        return parseLong(intent.get("offerId"));
+        Long direct = parseLong(intent.get("offerId"));
+        if (direct != null) return direct;
+        return parseLong(intent.get("ofertaId"));
     }
 
     private Long parseLong(Object raw) {
@@ -498,6 +594,17 @@ public class OfertaService {
     }
 
     public record ResultadoRespuesta(String mensaje, boolean accepted, Servicio servicio) {}
+
+    public record PaymentUpdateResult(boolean updated,
+                                      boolean markedPaid,
+                                      boolean markedFailed,
+                                      String status,
+                                      Oferta oferta,
+                                      Servicio servicio) {
+        public static PaymentUpdateResult noop(String status) {
+            return new PaymentUpdateResult(false, false, false, status, null, null);
+        }
+    }
 
     private String normalizeAction(String action) {
         if (action == null) return null;

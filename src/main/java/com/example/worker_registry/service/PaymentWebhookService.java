@@ -1,12 +1,8 @@
 package com.example.worker_registry.service;
 
-import com.example.worker_registry.Entitys.Oferta;
-import com.example.worker_registry.Entitys.Servicio;
-import com.example.worker_registry.Entitys.EstadoNegociacion;
-import com.example.worker_registry.Entitys.EstadoServicio;
-import com.example.worker_registry.Repository.OfertaRepository;
-import com.example.worker_registry.Repository.ServicioRepository;
 import com.example.worker_registry.Services.MailService;
+import com.example.worker_registry.Services.OfertaService;
+import com.example.worker_registry.Entitys.Servicio;
 import com.example.worker_registry.Services.PushNotificationService;
 import jakarta.transaction.Transactional;
 import org.slf4j.Logger;
@@ -14,26 +10,21 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.LinkedHashMap;
-import java.util.Locale;
 import java.util.Map;
-import java.util.Optional;
 
 @Service
 public class PaymentWebhookService {
 
     private static final Logger log = LoggerFactory.getLogger(PaymentWebhookService.class);
 
-    private final OfertaRepository ofertaRepository;
-    private final ServicioRepository servicioRepository;
+    private final OfertaService ofertaService;
     private final PushNotificationService pushNotificationService;
     private final MailService mailService;
 
-    public PaymentWebhookService(OfertaRepository ofertaRepository,
-                                 ServicioRepository servicioRepository,
+    public PaymentWebhookService(OfertaService ofertaService,
                                  PushNotificationService pushNotificationService,
                                  MailService mailService) {
-        this.ofertaRepository = ofertaRepository;
-        this.servicioRepository = servicioRepository;
+        this.ofertaService = ofertaService;
         this.pushNotificationService = pushNotificationService;
         this.mailService = mailService;
     }
@@ -45,52 +36,18 @@ public class PaymentWebhookService {
             log.warn("Webhook payload does not contain intent data");
             return;
         }
-        String intentId = Optional.ofNullable(payload.get("id"))
-                .map(Object::toString)
-                .orElse(null);
-        String normalizedStatus = Optional.ofNullable(payload.get("status"))
-                .map(Object::toString)
-                .map(String::toLowerCase)
-                .orElse(null);
-        if (intentId == null || normalizedStatus == null) {
-            log.warn("Webhook missing id or status: {}", payload);
-            return;
-        }
-        Optional<Oferta> ofertaOpt = ofertaRepository.findByPaymentIntentId(intentId);
-        if (ofertaOpt.isEmpty()) {
-            log.warn("No oferta found for payment intent {}", intentId);
-            return;
-        }
-        Oferta oferta = ofertaOpt.get();
-        if (oferta.getEstado() != EstadoNegociacion.PENDIENTE_DE_PAGO) {
-            log.info("Ignoring webhook for oferta {} in state {}", oferta.getId(), oferta.getEstado());
-            return;
-        }
-        oferta.setPaymentStatus(normalizedStatus.toUpperCase(Locale.ROOT));
-        ofertaRepository.save(oferta);
+        var result = ofertaService.actualizarEstadoPago(payload);
+        dispatchNotifications(result);
+    }
 
-        Servicio servicio = oferta.getServicio();
-        if (servicio == null) {
-            return;
+    @Transactional
+    public OfertaService.PaymentUpdateResult handlePaymentPayload(Map<String, Object> payload) {
+        if (payload == null || payload.isEmpty()) {
+            return OfertaService.PaymentUpdateResult.noop("empty-payload");
         }
-        
-        Long workerId = oferta.getTrabajador() != null ? oferta.getTrabajador().getId() : null;
-        
-        if ("succeeded".equals(normalizedStatus)) {
-            servicio.setEstado(EstadoServicio.ASIGNADO);
-            oferta.setEstado(EstadoNegociacion.ASIGNADO);
-            if (workerId != null) {
-                servicio.setAssignedWorkerId(workerId);
-            }
-            servicioRepository.save(servicio);
-            notifySuccess(servicio, workerId);
-        } else if ("requires_payment_method".equals(normalizedStatus) || "failed".equals(normalizedStatus)) {
-            servicio.setEstado(EstadoServicio.PENDIENTE);
-            servicio.setAssignedWorkerId(null);
-            servicioRepository.save(servicio);
-            notifyFailure(servicio);
-            revertNegotiation(oferta);
-        }
+        var result = ofertaService.actualizarEstadoPago(payload);
+        dispatchNotifications(result);
+        return result;
     }
 
     private Map<String, Object> extractObject(Map<String, Object> event) {
@@ -116,6 +73,23 @@ public class PaymentWebhookService {
         return Map.of();
     }
 
+    private void dispatchNotifications(OfertaService.PaymentUpdateResult result) {
+        if (result == null || result.oferta() == null) {
+            return;
+        }
+        Servicio servicio = result.servicio();
+        Long workerId = result.oferta().getTrabajador() != null ? result.oferta().getTrabajador().getId() : null;
+        if (result.markedPaid()) {
+            if (servicio != null) {
+                notifySuccess(servicio, workerId);
+            }
+        } else if (result.markedFailed()) {
+            if (servicio != null) {
+                notifyFailure(servicio);
+            }
+        }
+    }
+
     private void notifySuccess(Servicio servicio, Long workerId) {
         Long clienteId = servicio.getCliente() != null ? servicio.getCliente().getId() : null;
         pushNotificationService.notifyAssignment(clienteId, workerId);
@@ -135,11 +109,5 @@ public class PaymentWebhookService {
                     "Pago rechazado en Conecta2",
                     "Hubo un problema al procesar el pago del servicio " + servicio.getTitulo() + ".");
         }
-    }
-
-    private void revertNegotiation(Oferta oferta) {
-        oferta.setEstado(EstadoNegociacion.EN_NEGOCIACION);
-        oferta.setUltimaPropuestaPor(com.example.worker_registry.Entitys.ParticipanteOferta.TRABAJADOR);
-        ofertaRepository.save(oferta);
     }
 }
