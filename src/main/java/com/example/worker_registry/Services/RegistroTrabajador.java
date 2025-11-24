@@ -17,7 +17,7 @@ public class RegistroTrabajador {
     private final BCryptPasswordEncoder encoder = new BCryptPasswordEncoder();
 
     @Value("${app.base-url}")
-    private String baseUrl; // ej: http://localhost:8080
+    private String baseUrl; // ej: https://conecta2.onrender.com
 
     @Value("${app.activation.auto:true}")
     private boolean activationAuto;
