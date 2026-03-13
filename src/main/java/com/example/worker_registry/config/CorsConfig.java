@@ -16,7 +16,7 @@ public class CorsConfig {
         CorsConfiguration cfg = new CorsConfiguration();
 
         // Permite solo el frontend publicado
-        cfg.setAllowedOrigins(List.of("https://conecta2.onrender.com"));
+        cfg.setAllowedOrigins(List.of("https://conecta2-backend-2.onrender.com"));
 
         cfg.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         cfg.setAllowedHeaders(List.of("*"));
