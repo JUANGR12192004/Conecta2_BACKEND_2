@@ -15,12 +15,16 @@ import org.mockito.Mockito;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
-import java.util.Map;
 import java.util.Optional;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.*;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 class OfertaServiceTest {
 
@@ -139,7 +143,11 @@ class OfertaServiceTest {
 
         verify(servicioRepository).save(servicio);
         verify(ofertaRepository).save(oferta);
-        verify(pushNotificationService).notifyTrabajador(eq(trabajador.getId()), eq("Cliente aceptó la oferta"), eq("El cliente aceptó la oferta. El cliente debe realizar el pago."));
+        verify(pushNotificationService).notifyTrabajador(
+                eq(trabajador.getId()),
+                eq("Pago pendiente"),
+                eq("El cliente aceptó la oferta, queda pendiente de pago.")
+        );
     }
 
     @Test
@@ -210,6 +218,10 @@ class OfertaServiceTest {
 
         verify(servicioRepository).save(servicio);
         verify(ofertaRepository).save(oferta);
-        verify(pushNotificationService).notifyCliente(eq(cliente.getId()), eq("Trabajador aceptó la oferta"), eq("El trabajador aceptó tu oferta. Debes proceder con el pago."));
+        verify(pushNotificationService).notifyCliente(
+                eq(cliente.getId()),
+                eq("Pago pendiente"),
+                eq("El trabajador aceptó la oferta, proceda al pago.")
+        );
     }
 }

@@ -1,6 +1,8 @@
 package com.example.worker_registry.Controllers;
 
+import com.example.worker_registry.Entitys.Cliente;
 import com.example.worker_registry.Entitys.Trabajador;
+import com.example.worker_registry.Repository.ClienteRepository;
 import com.example.worker_registry.Repository.TrabajadorRepository;
 import com.example.worker_registry.Services.RegistroTrabajador;
 import com.example.worker_registry.securtity.JwtService;
@@ -17,18 +19,20 @@ public class AuthTrabajadorController {
 
     private final RegistroTrabajador regService;
     private final TrabajadorRepository repo;
+    private final ClienteRepository clienteRepo;
     private final JwtService jwt;
     private final BCryptPasswordEncoder encoder = new BCryptPasswordEncoder();
 
     public AuthTrabajadorController(RegistroTrabajador regService,
                                     TrabajadorRepository repo,
+                                    ClienteRepository clienteRepo,
                                     JwtService jwt) {
         this.regService = regService;
         this.repo = repo;
+        this.clienteRepo = clienteRepo;
         this.jwt = jwt;
     }
 
-    // Accept POST to both /api/v1/auth/workers and /api/v1/auth/workers/register
     @PostMapping({"/workers", "/workers/register"})
     public ResponseEntity<?> registerWorker(@Valid @RequestBody Trabajador trabajador) {
         var saved = regService.registrarTrabajador(trabajador);
@@ -55,15 +59,77 @@ public class AuthTrabajadorController {
                 "email", "correo", "correoElectronico", "correo_electronico", "username");
         String password = firstNonBlank(payload,
                 "password", "contrasena", "clave");
+        String role = firstNonBlank(payload,
+                "role", "rol", "userType", "user_type", "accountType", "account_type", "tipoUsuario");
 
         if (email.isEmpty() || password.isEmpty()) {
             return ResponseEntity.status(401).body(Map.of("mensaje", "Credenciales invalidas"));
         }
 
+        if ("CLIENT".equalsIgnoreCase(role) || "CLIENTE".equalsIgnoreCase(role)) {
+            return authenticateClient(email, password);
+        }
+        if ("WORKER".equalsIgnoreCase(role) || "TRABAJADOR".equalsIgnoreCase(role)) {
+            return authenticateWorker(email, password);
+        }
+
+        var workerResponse = authenticateWorkerIfPossible(email, password);
+        if (workerResponse != null) {
+            return workerResponse;
+        }
+
+        var clientResponse = authenticateClientIfPossible(email, password);
+        if (clientResponse != null) {
+            return clientResponse;
+        }
+
+        return ResponseEntity.status(401).body(Map.of("mensaje", "Credenciales invalidas"));
+    }
+
+    private String firstNonBlank(Map<String, String> payload, String... keys) {
+        for (String key : keys) {
+            if (payload.containsKey(key)) {
+                var value = payload.get(key);
+                if (value != null) {
+                    var trimmed = value.trim();
+                    if (!trimmed.isEmpty()) {
+                        return trimmed;
+                    }
+                }
+            }
+        }
+        return "";
+    }
+
+    private ResponseEntity<?> authenticateWorker(String email, String password) {
         var trabajador = repo.findByCorreo(email).orElse(null);
         if (trabajador == null) {
             return ResponseEntity.status(401).body(Map.of("mensaje", "Credenciales invalidas"));
         }
+        return buildWorkerLoginResponse(trabajador, password);
+    }
+
+    private ResponseEntity<?> authenticateClient(String email, String password) {
+        var cliente = clienteRepo.findByCorreo(email).orElse(null);
+        if (cliente == null) {
+            return ResponseEntity.status(401).body(Map.of("mensaje", "Credenciales invalidas"));
+        }
+        return buildClientLoginResponse(cliente, password);
+    }
+
+    private ResponseEntity<?> authenticateWorkerIfPossible(String email, String password) {
+        return repo.findByCorreo(email)
+                .map(trabajador -> buildWorkerLoginResponse(trabajador, password))
+                .orElse(null);
+    }
+
+    private ResponseEntity<?> authenticateClientIfPossible(String email, String password) {
+        return clienteRepo.findByCorreo(email)
+                .map(cliente -> buildClientLoginResponse(cliente, password))
+                .orElse(null);
+    }
+
+    private ResponseEntity<?> buildWorkerLoginResponse(Trabajador trabajador, String password) {
         if (!trabajador.isActivo()) {
             return ResponseEntity.status(403).body(Map.of("mensaje", "Cuenta no verificada. Revisa tu correo."));
         }
@@ -80,18 +146,20 @@ public class AuthTrabajadorController {
         ));
     }
 
-    private String firstNonBlank(Map<String, String> payload, String... keys) {
-        for (String key : keys) {
-            if (payload.containsKey(key)) {
-                var value = payload.get(key);
-                if (value != null) {
-                    var trimmed = value.trim();
-                    if (!trimmed.isEmpty()) {
-                        return trimmed;
-                    }
-                }
-            }
+    private ResponseEntity<?> buildClientLoginResponse(Cliente cliente, String password) {
+        if (!cliente.isActivo()) {
+            return ResponseEntity.status(403).body(Map.of("mensaje", "Cuenta no verificada. Revisa tu correo."));
         }
-        return "";
+        if (!encoder.matches(password, cliente.getContrasena())) {
+            return ResponseEntity.status(401).body(Map.of("mensaje", "Credenciales invalidas"));
+        }
+
+        var access = jwt.generateAccessToken(cliente.getId(), "CLIENT");
+        return ResponseEntity.ok(Map.of(
+                "token", access,
+                "userId", cliente.getId(),
+                "nombreCompleto", cliente.getNombreCompleto(),
+                "role", "CLIENT"
+        ));
     }
 }

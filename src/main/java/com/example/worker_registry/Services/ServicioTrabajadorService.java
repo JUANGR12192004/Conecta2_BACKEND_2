@@ -43,7 +43,9 @@ public class ServicioTrabajadorService {
         if (categoria == null) {
             throw new IllegalStateException("El trabajador no tiene un area de servicio valida");
         }
-        var serviciosPendientes = servicioRepo.findByEstadoAndCategoria(EstadoServicio.PENDIENTE, categoria);
+        var serviciosPendientes = new ArrayList<>(
+                servicioRepo.findByEstadoAndCategoria(EstadoServicio.PENDIENTE, categoria)
+        );
         var serviciosPendientePagoAsignados = servicioRepo.findByAssignedWorkerIdAndEstado(trabajadorId, EstadoServicio.PENDIENTE_PAGO);
         serviciosPendientes.addAll(serviciosPendientePagoAsignados);
         return filtrarServiciosVigentes(serviciosPendientes);
